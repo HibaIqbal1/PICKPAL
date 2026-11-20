@@ -1,0 +1,6 @@
+{
+  "name": "PickPal",
+  "description": "AI-Enabled Personalized Remote Shopping & Household Service Platform",
+  "requestFramePermissions": ["camera", "microphone", "geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

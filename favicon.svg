@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <defs>
+    <!-- Background Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2D121E"/>
+      <stop offset="100%" stop-color="#140A10"/>
+    </linearGradient>
+
+    <!-- Brand Pink Gradient -->
+    <linearGradient id="brandPink" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF5C9D"/>
+      <stop offset="50%" stop-color="#E8236B"/>
+      <stop offset="100%" stop-color="#B80E4C"/>
+    </linearGradient>
+
+    <!-- Accent Light Pink Gradient -->
+    <linearGradient id="accentPink" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFE1EC"/>
+      <stop offset="100%" stop-color="#FFBDD5"/>
+    </linearGradient>
+
+    <!-- Glow Filter -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="16" result="blur"/>
+      <feComposite in="SourceGraphic" in2="blur" operator="over"/>
+    </filter>
+
+    <shadow id="dropShadow">
+      <feDropShadow dx="0" dy="12" stdDeviation="16" flood-color="#E8236B" flood-opacity="0.35"/>
+    </shadow>
+  </defs>
+
+  <!-- Container Tile -->
+  <rect width="512" height="512" rx="128" fill="url(#bgGrad)"/>
+
+  <!-- Subtle Inner Border -->
+  <rect x="8" y="8" width="496" height="496" rx="120" fill="none" stroke="#FFBDD5" stroke-opacity="0.15" stroke-width="4"/>
+
+  <!-- Outer Glow Ring -->
+  <circle cx="256" cy="230" r="140" fill="none" stroke="url(#brandPink)" stroke-width="2" opacity="0.4" filter="url(#glow)"/>
+
+  <!-- Main 'P' Pin + Box Emblem Group -->
+  <g transform="translate(0, 10)">
+    <!-- Location Pin Base (Stylized P Loop) -->
+    <path d="M 256,90 
+             C 176,90 120,146 120,226 
+             C 120,296 190,366 256,422 
+             C 322,366 392,296 392,226 
+             C 392,146 336,90 256,90 Z" 
+          fill="url(#brandPink)" 
+          style="filter: drop-shadow(0px 16px 24px rgba(232, 35, 107, 0.45));"/>
+
+    <!-- Inner Pin Cutout (Letter 'P' Hole) -->
+    <circle cx="256" cy="210" r="64" fill="#140A10"/>
+
+    <!-- Package / Gift Accent inside Pin -->
+    <rect x="226" y="180" width="60" height="60" rx="14" fill="url(#accentPink)"/>
+    <!-- Package Ribbon Lines -->
+    <path d="M 256,180 V 240 M 226,210 H 286" stroke="#E8236B" stroke-width="6" stroke-linecap="round"/>
+
+    <!-- Sparkle / Speed Accent Dot -->
+    <circle cx="340" cy="140" r="14" fill="#FFE1EC"/>
+  </g>
+</svg>

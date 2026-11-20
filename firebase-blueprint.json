@@ -1,0 +1,150 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User account representation on the platform.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier of the user (UID)." },
+        "name": { "type": "string", "description": "Full name of the user." },
+        "email": { "type": "string", "description": "Email address of the user." },
+        "role": { "type": "string", "enum": ["customer", "worker", "admin"], "description": "User platform role." },
+        "status": { "type": "string", "enum": ["active", "suspended", "banned"], "description": "Status of account." },
+        "verified": { "type": "boolean", "description": "Verification status (specifically for workers)." },
+        "earnings": { "type": "number", "description": "Worker accumulated earnings." },
+        "rating": { "type": "number", "description": "Worker rating." },
+        "avatar": { "type": "string", "description": "URL to user's profile picture." },
+        "phone": { "type": "string", "description": "Phone number (E.164) used for in-app calling." },
+        "area": { "type": "string", "description": "Human-readable service area / locality." },
+        "lat": { "type": "number", "description": "Worker's stored service location latitude." },
+        "lng": { "type": "number", "description": "Worker's stored service location longitude." },
+        "liveLat": { "type": "number", "description": "Worker's live broadcast latitude during an active job." },
+        "liveLng": { "type": "number", "description": "Worker's live broadcast longitude during an active job." },
+        "idProof": { "type": "string", "description": "Government ID / licence number submitted during worker onboarding." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of account creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Timestamp of last account update." }
+      },
+      "required": ["id", "name", "email", "role", "status", "verified"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Order for custom sourcing or general task delivery.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique order identifier." },
+        "customerId": { "type": "string", "description": "ID of the customer who created the order." },
+        "customerName": { "type": "string", "description": "Name of the customer." },
+        "workerId": { "type": "string", "description": "ID of the assigned worker." },
+        "workerName": { "type": "string", "description": "Name of the assigned worker." },
+        "storeName": { "type": "string", "description": "Target retailer/store name." },
+        "category": { "type": "string", "enum": ["grocery", "pharmacy", "hardware", "electronics", "other"], "description": "Sourcing category." },
+        "status": { "type": "string", "enum": ["searching_worker", "worker_assigned", "in_progress", "checkout_approvals", "delivering", "completed", "cancelled"], "description": "Current order status." },
+        "items": { "type": "array", "description": "List of ordered items." },
+        "totalAmount": { "type": "number", "description": "Total order pricing." },
+        "budgetCap": { "type": "number", "description": "Maximum price cap designated by user." },
+        "eta": { "type": "string", "description": "Estimated delivery text." },
+        "customerLat": { "type": "number", "description": "Customer's latitude at request time (proximity dispatch)." },
+        "customerLng": { "type": "number", "description": "Customer's longitude at request time (proximity dispatch)." },
+        "workerLiveLat": { "type": "number", "description": "Worker's live latitude broadcast during an active job." },
+        "workerLiveLng": { "type": "number", "description": "Worker's live longitude broadcast during an active job." },
+        "workerLiveAt": { "type": "string", "description": "ISO timestamp of the last worker live-location update." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp of order creation." },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Timestamp of last order update." }
+      },
+      "required": ["id", "customerId", "customerName", "storeName", "category", "status", "totalAmount", "budgetCap"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Real-time chat messaging within an order.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique message identifier." },
+        "senderId": { "type": "string", "description": "User ID of the sender." },
+        "senderName": { "type": "string", "description": "Name of the sender." },
+        "senderRole": { "type": "string", "enum": ["customer", "worker", "ai", "system"], "description": "Role of the sender." },
+        "text": { "type": "string", "description": "Text message body." },
+        "timestamp": { "type": "string", "description": "Render-friendly localized timestamp string." },
+        "image": { "type": "string", "description": "Optional attachment image URL." },
+        "substitutionDecision": { "type": "string", "enum": ["approved", "declined"], "description": "Optional decision response for proposed substitutions." },
+        "proposedItem": { "type": "object", "description": "Optional structure detailing a product substitution proposal." }
+      },
+      "required": ["id", "senderId", "senderName", "senderRole", "text", "timestamp"]
+    },
+    "SystemLog": {
+      "title": "SystemLog",
+      "description": "Platform audit logging tracking critical operations.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique audit log identifier." },
+        "action": { "type": "string", "description": "Coded descriptive action name." },
+        "details": { "type": "string", "description": "Detailed log description." },
+        "createdBy": { "type": "string", "description": "User ID or system tag that generated the log." },
+        "timestamp": { "type": "string", "format": "date-time", "description": "Timestamp of log recording." }
+      },
+      "required": ["id", "action", "details", "createdBy"]
+    },
+    "CallSignal": {
+      "title": "CallSignal",
+      "description": "WebRTC signaling payload for an in-app audio call between worker and customer.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique call identifier (equals orderId)." },
+        "orderId": { "type": "string", "description": "Order this call is associated with." },
+        "callerId": { "type": "string", "description": "UID of the caller." },
+        "calleeId": { "type": "string", "description": "UID of the callee." },
+        "status": { "type": "string", "enum": ["ringing", "connected", "ended"], "description": "Call state." },
+        "offer": { "type": "object", "description": "SDP offer from caller." },
+        "answer": { "type": "object", "description": "SDP answer from callee." },
+        "ice": { "type": "array", "description": "Exchanged ICE candidates ({ from, candidate })." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp the call was initiated." }
+      },
+      "required": ["id", "orderId", "callerId", "calleeId", "status"]
+    },
+    "SosAlert": {
+      "title": "SosAlert",
+      "description": "Emergency / misbehaviour alert raised by a customer or worker to a manager.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique alert identifier." },
+        "orderId": { "type": "string", "description": "Related order, if any." },
+        "userId": { "type": "string", "description": "UID of the person who raised the alert." },
+        "userName": { "type": "string", "description": "Display name of the reporter." },
+        "role": { "type": "string", "enum": ["customer", "worker", "admin"], "description": "Role of the reporter." },
+        "lat": { "type": "number", "description": "Reporter's latitude at alert time." },
+        "lng": { "type": "number", "description": "Reporter's longitude at alert time." },
+        "reason": { "type": "string", "description": "Chosen reason (emergency / worker_misbehaviour / something_else)." },
+        "note": { "type": "string", "description": "Optional free-text detail." },
+        "status": { "type": "string", "enum": ["open", "resolved"], "description": "Alert state." },
+        "resolvedBy": { "type": "string", "description": "UID of the manager who resolved it." },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Timestamp the alert was raised." }
+      },
+      "required": ["id", "userId", "userName", "role", "reason", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User accounts collection indexed by system UID."
+    },
+    "/orders/{orderId}": {
+      "schema": "Order",
+      "description": "Active and historical service orders."
+    },
+    "/orders/{orderId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Real-time communication timeline for active shopping compliance."
+    },
+    "/calls/{callId}": {
+      "schema": "CallSignal",
+      "description": "WebRTC signaling documents (one per active order) exchanged between worker and customer."
+    },
+    "/sos/{sosId}": {
+      "schema": "SosAlert",
+      "description": "Emergency / misbehaviour alerts raised by a customer or worker and resolved by a manager."
+    },
+    "/system_logs/{logId}": {
+      "schema": "SystemLog",
+      "description": "Immutable ledger tracking administrator actions, worker onboarding, and critical escalations."
+    }
+  }
+}

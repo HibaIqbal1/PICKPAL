@@ -1,0 +1,301 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny catch-all safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- REUSABLE UTILITY FUNCTIONS ---
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        || (exists(/databases/$(database)/documents/users/$(request.auth.uid)) && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['admin', 'superAdmin'])
+      );
+    }
+
+    function isManager() {
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && (
+        get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['manager', 'localManager', 'regionalManager', 'admin', 'superAdmin']
+      );
+    }
+
+    function isManagerOrAdmin() {
+      return isAdmin() || isManager();
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- ENTITY VALIDATION HELPERS ---
+
+    function isValidUser(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+        && (!('email' in data) || (data.email is string && data.email.size() <= 150))
+        && data.role is string && (data.role == 'customer' || data.role == 'worker' || data.role == 'manager' || data.role == 'admin' || data.role == 'superAdmin' || data.role == 'localManager' || data.role == 'regionalManager')
+        && data.status is string && (data.status == 'active' || data.status == 'pendingApproval' || data.status == 'suspended' || data.status == 'banned' || data.status == 'rejected')
+        && data.verified is bool
+        && (!('phone' in data) || (data.phone is string && data.phone.size() <= 20))
+        && (!('idProof' in data) || (data.idProof is string && data.idProof.size() <= 50))
+        && (!('lat' in data) || data.lat is number)
+        && (!('lng' in data) || data.lng is number)
+        && (!('liveLat' in data) || data.liveLat is number)
+        && (!('liveLng' in data) || data.liveLng is number)
+        && (!('avatar' in data) || data.avatar is string)
+        && (!('walletBalance' in data) || data.walletBalance is number);
+    }
+
+    function isValidOrder(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.customerId is string && data.customerId.size() <= 128
+        && data.customerName is string && data.customerName.size() <= 100
+        && data.storeName is string && data.storeName.size() <= 100
+        && data.category is string && (data.category == 'grocery' || data.category == 'pharmacy' || data.category == 'hardware' || data.category == 'electronics' || data.category == 'other')
+        && data.status is string && (data.status == 'searching_worker' || data.status == 'worker_assigned' || data.status == 'travelling' || data.status == 'arrived' || data.status == 'in_progress' || data.status == 'checkout_approvals' || data.status == 'delivering' || data.status == 'completed' || data.status == 'cancelled')
+        && data.totalAmount is number && data.totalAmount >= 0
+        && data.budgetCap is number && data.budgetCap >= 0
+        && (!('customerLat' in data) || data.customerLat is number)
+        && (!('customerLng' in data) || data.customerLng is number)
+        && (!('workerLiveLat' in data) || data.workerLiveLat is number)
+        && (!('workerLiveLng' in data) || data.workerLiveLng is number)
+        && (!('workerLiveAt' in data) || data.workerLiveAt is string);
+    }
+
+    function isValidCall(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.orderId is string && data.orderId.size() <= 128
+        && data.callerId is string && data.callerId.size() <= 128
+        && data.calleeId is string && data.calleeId.size() <= 128
+        && data.status is string && (data.status == 'ringing' || data.status == 'connected' || data.status == 'ended')
+        && (!('ice' in data) || data.ice is list);
+    }
+
+    function isValidSos(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.userId is string && data.userId.size() <= 128
+        && data.userName is string && data.userName.size() <= 100
+        && data.role is string && (data.role == 'customer' || data.role == 'worker' || data.role == 'admin')
+        && data.reason is string && data.reason.size() > 0 && data.reason.size() <= 60
+        && data.status is string && (data.status == 'open' || data.status == 'resolved')
+        && (!('orderId' in data) || data.orderId is string)
+        && (!('note' in data) || (data.note is string && data.note.size() <= 300))
+        && (!('lat' in data) || data.lat is number)
+        && (!('lng' in data) || data.lng is number);
+    }
+
+    function isValidMessage(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.senderId is string && data.senderId.size() <= 128
+        && data.senderName is string && data.senderName.size() <= 100
+        && data.senderRole is string && (data.senderRole == 'customer' || data.senderRole == 'worker' || data.senderRole == 'ai' || data.senderRole == 'system')
+        && data.text is string && data.text.size() <= 5000
+        && data.timestamp is string && data.timestamp.size() <= 50;
+    }
+
+    function isValidSystemLog(data) {
+      return data.id is string && data.id.size() <= 128
+        && data.action is string && data.action.size() <= 200
+        && data.details is string && data.details.size() <= 5000
+        && data.createdBy is string && data.createdBy.size() <= 128;
+    }
+
+    // --- COLLECTION RULES ---
+
+    // USERS COLLECTION
+    match /users/{userId} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(userId) && isValidUser(incoming());
+      
+      // Allow managers and admins to approve/reject/suspend user accounts
+      allow update: if isSignedIn() && (
+        isManagerOrAdmin() || (
+          isOwner(userId) 
+          && isValidUser(incoming())
+          && incoming().role == existing().role
+          && incoming().status == existing().status
+          && incoming().verified == existing().verified
+          && (!existing().keys().contains('earnings') || incoming().earnings == existing().earnings)
+        )
+      );
+      
+      allow delete: if isAdmin();
+    }
+
+    // ADMINS COLLECTION (System source of truth for isAdmin lookup)
+    match /admins/{adminId} {
+      allow read: if isSignedIn();
+      allow write: if isAdmin();
+    }
+
+    // ORDERS COLLECTION
+    match /orders/{orderId} {
+      allow read: if isSignedIn() && (
+        resource.data.customerId == request.auth.uid 
+        || resource.data.workerId == request.auth.uid 
+        || resource.data.status == 'searching_worker'
+        || isManagerOrAdmin()
+      );
+      
+      allow create: if isSignedIn() 
+        && incoming().customerId == request.auth.uid 
+        && isValidOrder(incoming());
+        
+      allow update: if isSignedIn() && (
+        isManagerOrAdmin() || (
+          (existing().customerId == request.auth.uid || existing().workerId == request.auth.uid || existing().status == 'searching_worker')
+          && isValidOrder(incoming())
+          // Enforce state immutability on ids
+          && incoming().id == existing().id
+          && incoming().customerId == existing().customerId
+          // Prevent further updates if terminal state is reached
+          && (existing().status != 'completed' && existing().status != 'cancelled')
+        )
+      );
+      
+      allow delete: if isAdmin();
+
+      // MESSAGES SUBCOLLECTION
+      match /messages/{messageId} {
+        allow read: if isSignedIn() && (
+          get(/databases/$(database)/documents/orders/$(orderId)).data.customerId == request.auth.uid
+          || get(/databases/$(database)/documents/orders/$(orderId)).data.workerId == request.auth.uid
+          || isManagerOrAdmin()
+        );
+        
+        allow create: if isSignedIn() && (
+          get(/databases/$(database)/documents/orders/$(orderId)).data.customerId == request.auth.uid
+          || get(/databases/$(database)/documents/orders/$(orderId)).data.workerId == request.auth.uid
+          || isManagerOrAdmin()
+        ) && incoming().senderId == request.auth.uid && isValidMessage(incoming());
+        
+        allow update, delete: if isManagerOrAdmin();
+      }
+    }
+
+    // TRANSACTIONS COLLECTION
+    match /transactions/{transactionId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isManagerOrAdmin());
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // NOTIFICATIONS COLLECTION
+    match /notifications/{notificationId} {
+      allow read: if isSignedIn() && (resource.data.userId == request.auth.uid || isManagerOrAdmin());
+      allow create: if isSignedIn();
+      allow update: if isSignedIn() && (resource.data.userId == request.auth.uid || isManagerOrAdmin());
+      allow delete: if isAdmin();
+    }
+
+    // INVOICES COLLECTION
+    match /invoices/{invoiceId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isManagerOrAdmin());
+      allow create: if isSignedIn() && incoming().customerId == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    // SYSTEM AUDIT LOGS (Append-only security enforcement)
+    match /system_logs/{logId} {
+      allow read: if isManagerOrAdmin();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    // COMPLAINTS COLLECTION
+    match /complaints/{complaintId} {
+      allow read, write: if isSignedIn();
+    }
+
+    // WEBRTC SIGNALING (one call doc per active order)
+    match /calls/{callId} {
+      allow read: if isSignedIn() && (
+        resource.data.callerId == request.auth.uid
+        || resource.data.calleeId == request.auth.uid
+        || isManagerOrAdmin()
+      );
+      allow create: if isSignedIn()
+        && incoming().callerId == request.auth.uid
+        && isValidCall(incoming());
+      allow update: if isSignedIn() && (
+        incoming().callerId == request.auth.uid
+        || incoming().calleeId == request.auth.uid
+      );
+      allow delete: if isAdmin();
+    }
+
+    // SOS ALERTS (raised by customer/worker, resolved by a manager/admin)
+    match /sos/{sosId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || isManagerOrAdmin()
+      );
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid && isValidSos(incoming());
+      allow update: if isManagerOrAdmin();
+      allow delete: if isAdmin();
+    }
+
+    match /sos_alerts/{sosId} {
+      allow read: if isSignedIn() && (
+        resource.data.userId == request.auth.uid || isManagerOrAdmin()
+      );
+      allow create: if isSignedIn() && incoming().userId == request.auth.uid && isValidSos(incoming());
+      allow update: if isManagerOrAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // SERVICES CATALOG COLLECTION
+    match /services/{serviceId} {
+      allow read: if true;
+      allow write: if isSignedIn() || isAdmin();
+    }
+
+    // --- NEW SHOP & SMART QUEUE SYSTEM COLLECTIONS ---
+    match /shops/{shopId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /shop_services/{serviceId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /staff/{staffId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /appointments/{appId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+    match /queue/{queueId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+    match /tokens/{tokenId} {
+      allow read: if isSignedIn();
+      allow write: if isSignedIn();
+    }
+    match /shop_reviews/{reviewId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+  }
+}
