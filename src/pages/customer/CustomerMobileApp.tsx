@@ -3,8 +3,12 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   ShoppingBag, Truck, Globe, ShieldCheck, AlertTriangle, ArrowRight,
   CheckCircle2, Clock, MapPin, Camera, Video, Phone, MessageSquare,
-  ChevronRight, ArrowLeft, Info, LogIn, KeyRound, Mail, UserCheck, Send, X, PlusCircle, Check, Home, Package
+  ChevronRight, ArrowLeft, Info, LogIn, KeyRound, Mail, UserCheck, Send, X, PlusCircle, Check, Home, Package, Navigation
 } from "lucide-react";
+import { BookingService, FastApiOrder } from "../../services/booking.service";
+import { LocationService } from "../../services/location.service";
+
+const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || "";
 
 // Service Option Interface
 export interface ServiceOption {
@@ -100,6 +104,45 @@ export function CustomerMobileApp({
   const [customsFee, setCustomsFee] = useState<number>(0);
   const [refImage, setRefImage] = useState<string | null>(null);
   const [isNonReturnable, setIsNonReturnable] = useState<boolean>(false);
+
+  // Order & Tracking State connected to FastAPI & Neon Escrow
+  const [activeOrder, setActiveOrder] = useState<FastApiOrder | null>(null);
+  const [isSubmittingOrder, setIsSubmittingOrder] = useState(false);
+  const [workerLocation, setWorkerLocation] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Live WebSocket tracking stream for customer
+  useEffect(() => {
+    if (!activeOrder?.id || currentScreen !== "tracking") return;
+    const unsub = LocationService.listenToOrderLocation(activeOrder.id, (coords) => {
+      setWorkerLocation({ lat: coords.latitude, lng: coords.longitude });
+    });
+    return () => unsub();
+  }, [activeOrder?.id, currentScreen]);
+
+  const handlePayAndCreateOrder = async () => {
+    if (!selectedServiceId) {
+      alert("Please select a local service or Custom Option from the dropdown first!");
+      return;
+    }
+    setIsSubmittingOrder(true);
+    try {
+      const order = await BookingService.createOrder({
+        store_name: shopName || "Guru Sweets Mysore",
+        category: activeTab === "local" ? "Local" : (activeTab === "state" ? "State" : "Global"),
+        items_description: productName || "Daily essentials",
+        shipping_tier: activeTab.toUpperCase() as "LOCAL" | "STATE" | "GLOBAL",
+        budget_cap: Number(productPrice) || 500,
+        delivery_fee: Number(shippingFee) || 40,
+      });
+      setActiveOrder(order);
+      setCurrentScreen("tracking");
+    } catch (err: any) {
+      console.error("Order creation failed:", err);
+      alert("Could not process order in database: " + err.message);
+    } finally {
+      setIsSubmittingOrder(false);
+    }
+  };
 
   // Live Chat Modal State
   const [showChat, setShowChat] = useState(false);
@@ -620,8 +663,12 @@ export function CustomerMobileApp({
               <div className="bg-white rounded-[20px] p-3.5 shadow-md border border-purple-100 flex items-center justify-between text-xs">
                 <div>
                   <div className="text-[10px] font-black text-purple-700 uppercase">Live Shop-to-Home Order</div>
-                  <div className="font-black text-slate-900 text-sm">Order #PP12345</div>
-                  <div className="text-[10px] text-slate-500 font-bold mt-0.5">{productName || "Mysore Pak (Guru Sweets)"} • Mysore Shop → Mysore Home</div>
+                  <div className="font-black text-slate-900 text-sm">
+                    Order #{activeOrder ? activeOrder.id : "PP12345"}
+                  </div>
+                  <div className="text-[10px] text-slate-500 font-bold mt-0.5">
+                    {activeOrder ? activeOrder.items_description : (productName || "Mysore Pak (Guru Sweets)")} • {activeOrder ? activeOrder.store_name : (shopName || "Mysore Shop")}
+                  </div>
                 </div>
                 <button
                   onClick={() => setShowChat(true)}
@@ -632,6 +679,44 @@ export function CustomerMobileApp({
                 </button>
               </div>
 
+              {/* Delivery OTP Card */}
+              {activeOrder?.delivery_otp && (
+                <div className="bg-emerald-50 border-2 border-emerald-300 rounded-[20px] p-3.5 flex items-center justify-between text-xs shadow-xs">
+                  <div>
+                    <div className="text-[10px] font-black uppercase text-emerald-800 tracking-wider">
+                      Customer Delivery Verification OTP
+                    </div>
+                    <div className="text-2xl font-black text-emerald-950 tracking-widest mt-0.5">
+                      {activeOrder.delivery_otp}
+                    </div>
+                    <div className="text-[10px] text-emerald-700 font-bold">
+                      Give this 4-digit OTP to shopper ONLY after receiving parcel
+                    </div>
+                  </div>
+                  <div className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center font-bold text-lg">
+                    🔐
+                  </div>
+                </div>
+              )}
+
+              {/* Live Worker GPS Tracking Signal */}
+              {workerLocation && (
+                <div className="bg-purple-50 border border-purple-200 rounded-[20px] p-3 flex items-center justify-between text-xs">
+                  <div className="flex items-center gap-2">
+                    <Navigation size={16} className="text-purple-600 animate-pulse" />
+                    <div>
+                      <div className="font-black text-purple-950 text-xs">Shopper Live GPS Signal</div>
+                      <div className="text-[10px] text-purple-700 font-bold">
+                        Lat: {workerLocation.lat.toFixed(5)} • Lng: {workerLocation.lng.toFixed(5)}
+                      </div>
+                    </div>
+                  </div>
+                  <span className="bg-emerald-600 text-white text-[9.5px] font-black px-2 py-0.5 rounded-full">
+                    LIVE
+                  </span>
+                </div>
+              )}
+
               <div className="bg-white rounded-[20px] p-4 shadow-md border border-purple-100 space-y-3">
                 <h3 className="text-xs font-black uppercase text-purple-900 tracking-wider">Escrow Delivery Timeline</h3>
 
@@ -641,43 +726,65 @@ export function CustomerMobileApp({
                   <div className="relative">
                     <div className="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-bold">✓</div>
                     <div>
-                      <div className="font-extrabold text-emerald-700">1. Payment Done Escrow (Rs. {totalAmount || 640})</div>
-                      <div className="text-[10px] text-slate-500">Money safely locked in PickPal Escrow Vault</div>
+                      <div className="font-extrabold text-emerald-700">1. Payment Done Escrow (Rs. {activeOrder ? activeOrder.total_amount : (totalAmount || 640)})</div>
+                      <div className="text-[10px] text-slate-500">Money safely locked in PickPal Escrow Vault (Neon PostgreSQL)</div>
                     </div>
                   </div>
 
                   <div className="relative">
-                    <div className="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-bold">✓</div>
+                    <div className={`absolute -left-6 top-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                      activeOrder?.worker_id ? "bg-emerald-500 text-white" : "bg-amber-400 text-white animate-pulse"
+                    }`}>
+                      {activeOrder?.worker_id ? "✓" : "2"}
+                    </div>
                     <div>
-                      <div className="font-extrabold text-emerald-700">2. Worker Accepted — Shopper Rajesh</div>
-                      <div className="text-[10px] text-slate-500">Assigned shopper en route to {shopName || "Guru Sweets Mysore"}</div>
-                    </div>
-                  </div>
-
-                  <div className="relative">
-                    <div className="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center text-[10px] font-bold">✓</div>
-                    <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200 space-y-1">
-                      <div className="font-black text-emerald-900">3. Bought Bill Uploaded (Rs. {productPrice || 500})</div>
-                      <div className="text-[10.5px] text-emerald-800 font-bold">Bill verified. Video proof attached by shopper.</div>
-                      <div className="flex items-center gap-2 pt-1">
-                        <div className="w-12 h-10 rounded-lg bg-slate-900 relative overflow-hidden flex items-center justify-center border border-emerald-300">
-                          {refImage ? (
-                            <img src={refImage} className="w-full h-full object-cover opacity-75" alt="Bill Proof" />
-                          ) : (
-                            <div className="text-white text-xs">📷</div>
-                          )}
-                          <Video size={14} className="text-white absolute" />
-                        </div>
-                        <span className="text-[10px] font-extrabold text-emerald-700">Video Proof Verified</span>
+                      <div className={`font-extrabold ${activeOrder?.worker_id ? "text-emerald-700" : "text-amber-700"}`}>
+                        {activeOrder?.worker_id ? `2. Worker Accepted — Shopper ${activeOrder.worker_id}` : "2. Finding Matching Shopper Nearby..."}
+                      </div>
+                      <div className="text-[10px] text-slate-500">
+                        {activeOrder?.worker_id ? `Assigned shopper en route to ${activeOrder.store_name}` : "Broadcasting request to active verified shoppers in your city"}
                       </div>
                     </div>
                   </div>
 
-                  <div className="relative opacity-60">
-                    <div className="absolute -left-6 top-0.5 w-5 h-5 rounded-full bg-slate-300 text-slate-600 flex items-center justify-center text-[10px] font-bold">4</div>
+                  <div className="relative">
+                    <div className={`absolute -left-6 top-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                      activeOrder?.status === "in_transit" || activeOrder?.status === "delivered" ? "bg-emerald-500 text-white" : "bg-slate-300 text-slate-600"
+                    }`}>
+                      {activeOrder?.status === "in_transit" || activeOrder?.status === "delivered" ? "✓" : "3"}
+                    </div>
+                    <div className="bg-emerald-50 p-2.5 rounded-xl border border-emerald-200 space-y-1">
+                      <div className="font-black text-emerald-900">
+                        3. Bought Bill Uploaded (Rs. {activeOrder?.actual_item_cost || productPrice || 500})
+                      </div>
+                      <div className="text-[10.5px] text-emerald-800 font-bold">
+                        {activeOrder?.store_receipt_url ? "Store receipt verified and stored." : "Shopper will upload verified store receipt photo."}
+                      </div>
+                      {activeOrder?.store_receipt_url && (
+                        <div className="pt-1">
+                          <img
+                            src={`${API_BASE_URL}${activeOrder.store_receipt_url}`}
+                            alt="Store Receipt"
+                            className="w-24 h-24 object-cover rounded-lg border border-emerald-300 shadow-xs"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="relative opacity-80">
+                    <div className={`absolute -left-6 top-0.5 w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold ${
+                      activeOrder?.status === "delivered" ? "bg-emerald-500 text-white" : "bg-slate-300 text-slate-600"
+                    }`}>
+                      {activeOrder?.status === "delivered" ? "✓" : "4"}
+                    </div>
                     <div>
-                      <div className="font-extrabold text-slate-700">4. Delivery — En Route to Home Address</div>
-                      <div className="text-[10px] text-slate-400 font-medium">Shopper delivering parcel to your home address</div>
+                      <div className="font-extrabold text-slate-700">
+                        {activeOrder?.status === "delivered" ? "4. Delivered & Escrow Released" : "4. Delivery — En Route to Home Address"}
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-medium">
+                        {activeOrder?.status === "delivered" ? "Order completed! Escrow funds released to shopper." : "Shopper delivering parcel to your home address"}
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -718,16 +825,17 @@ export function CustomerMobileApp({
         {currentScreen === "home" && (
           <div className="fixed bottom-0 left-0 right-0 max-w-md mx-auto p-3 bg-white/95 backdrop-blur-md border-t border-purple-200/80 shadow-2xl z-50">
             <button
-              onClick={() => {
-                if (!selectedServiceId) {
-                  alert("Please select a local service or Custom Option from the dropdown first!");
-                  return;
-                }
-                setCurrentScreen("tracking");
-              }}
-              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-purple-600 via-purple-700 to-orange-500 text-white font-black text-sm shadow-lg shadow-purple-600/30 hover:opacity-95 transition-all flex items-center justify-center gap-2"
+              onClick={handlePayAndCreateOrder}
+              disabled={isSubmittingOrder}
+              className="w-full py-3.5 rounded-xl bg-gradient-to-r from-purple-600 via-purple-700 to-orange-500 text-white font-black text-sm shadow-lg shadow-purple-600/30 hover:opacity-95 transition-all flex items-center justify-center gap-2 disabled:opacity-60"
             >
-              <span>{selectedServiceId ? `Pay Now Rs. ${totalAmount} & Track Order` : "Select a Local Service to Continue &rarr;"}</span>
+              <span>
+                {isSubmittingOrder
+                  ? "Securing Funds in Neon Escrow..."
+                  : selectedServiceId
+                  ? `Pay Now Rs. ${totalAmount} & Track Order`
+                  : "Select a Local Service to Continue \u2192"}
+              </span>
               <ArrowRight size={16} />
             </button>
           </div>

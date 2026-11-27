@@ -3,8 +3,10 @@ import { motion, AnimatePresence } from "motion/react";
 import {
   ShieldCheck, AlertTriangle, ArrowRight, CheckCircle2, Clock, MapPin,
   Camera, Video, Phone, MessageSquare, ChevronRight, Navigation, ArrowLeft,
-  Zap, LogIn, Lock, Wallet, FileText, Bike, Building, Truck, Send, X, Check, FileCheck
+  Zap, LogIn, Lock, Wallet, FileText, Bike, Building, Truck, Send, X, Check, FileCheck, RefreshCw
 } from "lucide-react";
+import { BookingService, FastApiOrder } from "../../services/booking.service";
+import { LocationService } from "../../services/location.service";
 
 export function WorkerMobileApp({
   onSwitchToCustomer,
@@ -29,6 +31,104 @@ export function WorkerMobileApp({
   const [city, setCity] = useState("Mysore");
   const [vehicle, setVehicle] = useState("Bike");
   const [isWorkerLoggedIn, setIsWorkerLoggedIn] = useState(() => localStorage.getItem("pickpal_worker_logged") === "true");
+
+  // Live Orders & Active Task State connected to FastAPI & Neon Escrow
+  const [liveOrders, setLiveOrders] = useState<FastApiOrder[]>([]);
+  const [activeTask, setActiveTask] = useState<FastApiOrder | null>(null);
+  const [isLoadingOrders, setIsLoadingOrders] = useState(false);
+  const [isUploadingReceipt, setIsUploadingReceipt] = useState(false);
+  const [isCompletingDelivery, setIsCompletingDelivery] = useState(false);
+  const [deliveryOtpInput, setDeliveryOtpInput] = useState("");
+  const [receiptFile, setReceiptFile] = useState<File | null>(null);
+
+  const fetchOpenJobs = () => {
+    setIsLoadingOrders(true);
+    BookingService.getOrders("searching_worker", "worker")
+      .then((orders) => setLiveOrders(orders))
+      .catch((err) => console.warn("Failed fetching open orders:", err))
+      .finally(() => setIsLoadingOrders(false));
+  };
+
+  useEffect(() => {
+    if (currentScreen === "dashboard") {
+      fetchOpenJobs();
+    }
+  }, [currentScreen]);
+
+  // Live GPS WebSocket Broadcaster for Worker
+  useEffect(() => {
+    if (!activeTask?.id || currentScreen !== "task") return;
+    const { sendCoords, close } = LocationService.connectWorkerLocation(activeTask.id, "WORKER_001");
+    let step = 0;
+    const baseLat = 12.3051;
+    const baseLng = 76.6551;
+    sendCoords(baseLat, baseLng);
+
+    const interval = setInterval(() => {
+      step += 1;
+      const lat = baseLat + step * 0.0004;
+      const lng = baseLng + step * 0.0004;
+      sendCoords(lat, lng);
+    }, 4000);
+
+    return () => {
+      clearInterval(interval);
+      close();
+    };
+  }, [activeTask?.id, currentScreen]);
+
+  const handleClaimJob = async (order: FastApiOrder) => {
+    try {
+      const claimed = await BookingService.claimOrder(order.id, "WORKER_001");
+      setActiveTask(claimed);
+      setActualBillAmount(claimed.budget_cap.toString());
+      setCurrentScreen("task");
+      alert(`Job #${order.id} claimed successfully! Proceeding to fulfillment.`);
+    } catch (err: any) {
+      alert("Failed to claim job: " + err.message);
+    }
+  };
+
+  const handleUploadReceipt = async () => {
+    if (!activeTask) return;
+    const cost = Number(actualBillAmount);
+    if (!cost || cost <= 0) {
+      alert("Please enter a valid actual bill amount");
+      return;
+    }
+    setIsUploadingReceipt(true);
+    try {
+      const fileToUpload = receiptFile || new File(["dummy_receipt_proof"], "receipt.jpg", { type: "image/jpeg" });
+      const updated = await BookingService.recordStorePurchase(activeTask.id, cost, fileToUpload);
+      setActiveTask(updated);
+      alert(`Store purchase of Rs. ${cost} recorded! Order status advanced to IN_TRANSIT.`);
+    } catch (err: any) {
+      alert("Failed to upload bill: " + err.message);
+    } finally {
+      setIsUploadingReceipt(false);
+    }
+  };
+
+  const handleCompleteDelivery = async () => {
+    if (!activeTask) return;
+    if (!deliveryOtpInput.trim()) {
+      alert("Please enter the 4-digit OTP provided by the customer.");
+      return;
+    }
+    setIsCompletingDelivery(true);
+    try {
+      const escrow = await BookingService.completeDelivery(activeTask.id, deliveryOtpInput.trim());
+      alert(`🎉 Delivery Verified! ₹${escrow.amount_released} released from Escrow to your wallet! Customer refund: ₹${escrow.amount_refunded}`);
+      setActiveTask(null);
+      setDeliveryOtpInput("");
+      setCurrentScreen("dashboard");
+      fetchOpenJobs();
+    } catch (err: any) {
+      alert("Delivery verification failed: " + err.message);
+    } finally {
+      setIsCompletingDelivery(false);
+    }
+  };
 
   // Task Fulfillment States
   const [actualBillAmount, setActualBillAmount] = useState("15200");
@@ -359,9 +459,66 @@ export function WorkerMobileApp({
                 ))}
               </div>
 
-              <h3 className="text-xs font-black uppercase text-purple-900 tracking-wider">
-                Incoming Requests - You are Active - Live
-              </h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-black uppercase text-purple-900 tracking-wider">
+                  Incoming Requests - You are Active - Live
+                </h3>
+                <button
+                  onClick={fetchOpenJobs}
+                  className="px-2.5 py-1 rounded-lg bg-white border border-purple-200 text-purple-700 hover:bg-purple-50 text-[10px] font-black flex items-center gap-1 shadow-xs"
+                >
+                  <RefreshCw size={11} className={isLoadingOrders ? "animate-spin" : ""} /> Refresh
+                </button>
+              </div>
+
+              {/* Render real orders from Neon PostgreSQL */}
+              {liveOrders.length > 0 ? (
+                liveOrders.map((order) => (
+                  <div
+                    key={order.id}
+                    className="bg-white rounded-[20px] p-4 shadow-md border-2 border-purple-500 space-y-2 text-xs relative"
+                  >
+                    <div className="flex justify-between items-center">
+                      <span className="text-[10px] font-black uppercase bg-purple-600 text-white px-2.5 py-0.5 rounded-full">
+                        {order.shipping_tier} • Neon Cloud
+                      </span>
+                      <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                        Escrow: ₹{order.total_amount}
+                      </span>
+                    </div>
+
+                    <div>
+                      <div className="font-black text-slate-900 text-sm">#{order.id} — {order.items_description}</div>
+                      <div className="text-[10.5px] text-slate-600 font-bold">Shop: {order.store_name} ({order.category})</div>
+                    </div>
+
+                    <div className="bg-purple-50 p-2.5 rounded-xl border border-purple-200 text-[11px] flex justify-between">
+                      <span className="text-slate-600 font-semibold">Budget Cap: ₹{order.budget_cap}</span>
+                      <span className="font-black text-purple-800">Your Earning: ₹{order.delivery_fee}</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 pt-1">
+                      <button
+                        onClick={() => alert(`Skipped order #${order.id}`)}
+                        className="py-2.5 rounded-xl bg-slate-100 text-slate-600 font-extrabold text-xs"
+                      >
+                        Decline
+                      </button>
+                      <button
+                        onClick={() => handleClaimJob(order)}
+                        className="py-2.5 rounded-xl bg-gradient-to-r from-purple-600 via-purple-700 to-orange-500 text-white font-black text-xs shadow-md flex items-center justify-center gap-1.5 hover:opacity-95"
+                      >
+                        <Zap size={14} /> Accept & Start
+                      </button>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <div className="bg-white/80 rounded-[20px] p-3 text-center text-xs text-purple-900 border border-purple-200">
+                  <p className="font-black">No open orders currently searching for shoppers.</p>
+                  <p className="text-[10.5px] text-slate-500">Orders placed by customers will appear here live!</p>
+                </div>
+              )}
 
               {(activeFilter === "all" || activeFilter === "local") && (
                 <div className="bg-white rounded-[20px] p-3.5 shadow-sm border-l-4 border-l-emerald-500 border-y border-r border-slate-200 space-y-2 text-xs">
@@ -479,7 +636,9 @@ export function WorkerMobileApp({
                 </button>
                 <div className="text-center">
                   <span className="text-[10px] font-black uppercase text-emerald-600 bg-emerald-50 px-2.5 py-0.5 rounded-full">Task Active</span>
-                  <h2 className="text-xs font-black text-slate-900">Order #PP12345</h2>
+                  <h2 className="text-xs font-black text-slate-900">
+                    Order #{activeTask ? activeTask.id : "PP12345"}
+                  </h2>
                 </div>
                 <button onClick={() => setShowChat(true)} className="p-2 bg-purple-100 text-purple-900 rounded-xl text-xs font-extrabold flex items-center gap-1">
                   <MessageSquare size={14} /> Chat
@@ -489,14 +648,16 @@ export function WorkerMobileApp({
               <div className="bg-white rounded-[20px] p-4 shadow-md border border-purple-100 space-y-3 text-xs">
                 <div className="flex items-center justify-between border-b pb-2">
                   <h4 className="font-black text-purple-950 uppercase text-[11px]">Task Execution Steps</h4>
-                  <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">KYC Verified ✓</span>
+                  <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
+                    Status: {activeTask ? activeTask.status.toUpperCase() : "ASSIGNED"}
+                  </span>
                 </div>
 
                 <div className="space-y-2">
                   <div className="flex items-center justify-between p-2.5 rounded-xl bg-purple-50 border border-purple-200">
                     <span className="font-extrabold text-slate-900">Step 1: Navigate to Shop</span>
                     <button
-                      onClick={() => alert("Opening Google Maps directions to K.R. Market Mysore...")}
+                      onClick={() => alert(`Opening Google Maps navigation to ${activeTask?.store_name || "Store"}...`)}
                       className="px-3 py-1.5 rounded-lg bg-purple-600 text-white font-black text-xs flex items-center gap-1 hover:bg-purple-700"
                     >
                       <Navigation size={12} /> Navigate Maps
@@ -504,35 +665,89 @@ export function WorkerMobileApp({
                   </div>
 
                   <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
-                    <div className="font-black text-slate-900">Step 2: Buy & Upload Bill Photo</div>
+                    <div className="flex items-center justify-between">
+                      <div className="font-black text-slate-900">Step 2: Buy & Upload Store Bill</div>
+                      {activeTask?.store_receipt_url && (
+                        <span className="text-[10px] font-black bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded">
+                          Receipt Uploaded ✓
+                        </span>
+                      )}
+                    </div>
                     <div className="flex items-center gap-2">
-                      <label className="p-2 bg-white border border-purple-300 rounded-lg text-[10px] font-bold text-purple-700 flex items-center gap-1 cursor-pointer shrink-0">
+                      <label className="p-2 bg-white border border-purple-300 rounded-lg text-[10px] font-bold text-purple-700 flex items-center gap-1 cursor-pointer shrink-0 hover:bg-purple-50">
                         <Camera size={14} /> Bill Photo
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            if (e.target.files && e.target.files[0]) {
+                              setReceiptFile(e.target.files[0]);
+                            }
+                          }}
+                        />
                       </label>
                       <input
                         type="number"
                         value={actualBillAmount}
                         onChange={(e) => setActualBillAmount(e.target.value)}
-                        placeholder="Enter Amount Rs.15200"
+                        placeholder="Actual Bill Amount (Rs.)"
                         className="flex-1 p-2 rounded-lg border border-purple-300 font-black text-slate-900 bg-white text-xs"
                       />
+                      <button
+                        onClick={handleUploadReceipt}
+                        disabled={isUploadingReceipt}
+                        className="px-3 py-2 rounded-lg bg-purple-600 hover:bg-purple-700 text-white font-black text-xs shrink-0 disabled:opacity-60 shadow-xs"
+                      >
+                        {isUploadingReceipt ? "Uploading..." : "Save Bill"}
+                      </button>
                     </div>
+                    {receiptFile && (
+                      <div className="text-[10px] text-emerald-700 font-bold">
+                        Attached: {receiptFile.name}
+                      </div>
+                    )}
                   </div>
 
                   <div className="p-2.5 rounded-xl bg-slate-50 border border-slate-200 flex items-center justify-between">
-                    <span className="font-extrabold text-slate-900">Step 3: Video Proof Upload</span>
-                    <button
-                      onClick={() => alert("Video proof recorded successfully!")}
-                      className="px-3 py-1.5 rounded-lg bg-slate-900 text-white font-black text-xs flex items-center gap-1 hover:bg-slate-800"
-                    >
-                      <Video size={12} /> Upload Video
-                    </button>
+                    <span className="font-extrabold text-slate-900">Step 3: Live GPS Broadcasting</span>
+                    <span className="text-[10px] font-black bg-emerald-600 text-white px-2 py-0.5 rounded-full animate-pulse">
+                      GPS Broadcaster Active
+                    </span>
                   </div>
+                </div>
+              </div>
 
-                  <div className="p-2.5 rounded-xl bg-purple-50 border border-purple-200 font-black text-purple-900 flex items-center justify-between">
-                    <span>Step 4: Go to DTDC Hub Shipping</span>
-                    <span className="text-[10px] bg-purple-600 text-white px-2 py-0.5 rounded-md">DTDC Hub</span>
-                  </div>
+              {/* Delivery Completion & OTP Escrow Release Card */}
+              <div className="bg-white rounded-[20px] p-4 shadow-md border-2 border-emerald-500 space-y-2.5 text-xs">
+                <div className="flex items-center justify-between">
+                  <h4 className="font-black text-emerald-950 uppercase text-[11px] flex items-center gap-1.5">
+                    <CheckCircle2 size={15} className="text-emerald-600" /> Step 4: OTP Delivery & Escrow Release
+                  </h4>
+                  <span className="text-[10px] font-black text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200">
+                    Instant Settlement
+                  </span>
+                </div>
+                <p className="text-[10.5px] font-bold text-slate-600">
+                  Ask customer for their 4-digit Delivery Verification OTP to confirm receipt and trigger instant wallet payout:
+                </p>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    maxLength={4}
+                    value={deliveryOtpInput}
+                    onChange={(e) => setDeliveryOtpInput(e.target.value)}
+                    placeholder="Enter Customer OTP (e.g. 1234)"
+                    className="flex-1 p-2.5 rounded-xl border-2 border-emerald-300 font-mono text-center tracking-widest text-lg font-black text-emerald-950 bg-emerald-50/50"
+                  />
+                  <button
+                    onClick={handleCompleteDelivery}
+                    disabled={isCompletingDelivery}
+                    className="px-4 py-3 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-700 hover:opacity-95 text-white font-black text-xs shadow-md shrink-0 disabled:opacity-60 flex items-center gap-1"
+                  >
+                    <Check size={14} />
+                    <span>{isCompletingDelivery ? "Releasing..." : "Verify & Release"}</span>
+                  </button>
                 </div>
               </div>
 

@@ -1,178 +1,302 @@
-import { where, orderBy, Unsubscribe } from "firebase/firestore";
-import { Order, OrderStatus, PickPalUser } from "../types";
+import { auth } from "../lib/firebase";
+import { Order, OrderStatus } from "../types";
 import { FirebaseService } from "./firebase.service";
-import { NotificationService } from "./notification.service";
-import { WorkerService } from "./worker.service";
-import { rankWorkers } from "../lib/matching";
+
+const API_BASE_URL = (import.meta as any).env?.VITE_API_URL || "";
+
+export interface FastApiOrder {
+  id: string;
+  customer_id: string;
+  worker_id?: string | null;
+  store_name: string;
+  category: string;
+  items_description: string;
+  shipping_tier: "LOCAL" | "STATE" | "GLOBAL";
+  budget_cap: number;
+  actual_item_cost: number;
+  delivery_fee: number;
+  service_fee: number;
+  total_amount: number;
+  status: OrderStatus;
+  delivery_otp?: string;
+  store_receipt_url?: string | null;
+  replacement_notes?: string | null;
+  created_at: string;
+  completed_at?: string | null;
+}
+
+export interface FastApiEscrow {
+  id: string;
+  order_id: string;
+  customer_id: string;
+  worker_id?: string | null;
+  amount_held: number;
+  amount_released: number;
+  amount_refunded: number;
+  status: "HELD" | "RELEASED" | "REFUNDED" | "DISPUTED";
+  created_at: string;
+  released_at?: string | null;
+}
 
 export class BookingService {
-  public static async createBooking(orderData: Omit<Order, "id">): Promise<Order> {
-    const id = "ord_" + Math.random().toString(36).substring(2, 10);
-    const order: Order = {
-      ...orderData,
-      id,
-      status: orderData.workerId ? "worker_assigned" : "searching_worker",
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+  /**
+   * Helper to retrieve auth token for FastAPI requests.
+   * If logged in with Firebase, sends the Firebase ID token.
+   * If not logged in, falls back to role identifier (CUST_001 or WORKER_001).
+   */
+  private static async getAuthHeader(roleFallback: "customer" | "worker" = "customer"): Promise<Record<string, string>> {
+    try {
+      if (auth.currentUser) {
+        const token = await auth.currentUser.getIdToken();
+        if (token) {
+          return { Authorization: `Bearer ${token}` };
+        }
+      }
+    } catch {
+      // Fallback to role token
+    }
+    const fallbackId = roleFallback === "worker" ? "WORKER_001" : "CUST_001";
+    return {
+      Authorization: `Bearer ${fallbackId}`,
+      "X-User-Id": fallbackId,
+    };
+  }
+
+  /**
+   * Creates a new Order and atomically holds funds in Escrow in Neon PostgreSQL.
+   */
+  public static async createOrder(orderData: any): Promise<FastApiOrder> {
+    const authHeaders = await this.getAuthHeader("customer");
+
+    const payload = {
+      store_name: orderData.store_name || orderData.storeName || "Spencer's Daily",
+      category: orderData.category || "Groceries",
+      items_description:
+        orderData.items_description ||
+        orderData.itemsDescription ||
+        (Array.isArray(orderData.items) ? orderData.items.map((i: any) => i.name).join(", ") : "Order items"),
+      shipping_tier: (orderData.shipping_tier || orderData.shippingTier || "LOCAL").toUpperCase(),
+      budget_cap: Number(orderData.budget_cap ?? orderData.budgetCap ?? 500),
+      delivery_fee: Number(orderData.delivery_fee ?? orderData.deliveryFee ?? orderData.shippingFee ?? 40),
     };
 
-    // Auto match worker if none provided
-    if (!order.workerId && order.customerLat && order.customerLng) {
-      try {
-        const workers = await WorkerService.getAvailableWorkers(order.category);
-        const allOrders = await FirebaseService.queryCollection<Order>("orders");
-        const ranked = rankWorkers(workers, allOrders, order, order.customerLat, order.customerLng);
-        if (ranked.length > 0) {
-          order.workerId = ranked[0].worker.id;
-          order.workerName = ranked[0].worker.name;
-          order.status = "worker_assigned";
-        }
-      } catch (err) {
-        console.error("Worker auto-matching error:", err);
-      }
-    }
-
-    await FirebaseService.setDocument("orders", id, order);
-
-    // Trigger Notification
-    await NotificationService.createNotification({
-      userId: order.customerId,
-      title: order.status === "worker_assigned" ? "Worker Assigned" : "Finding Worker",
-      desc: order.status === "worker_assigned"
-        ? `Worker ${order.workerName} assigned to your request.`
-        : `Searching for a matching worker near ${order.storeName}.`,
-      time: "Just now",
-      read: false,
-      orderId: id,
-      type: "order",
+    const res = await fetch(`${API_BASE_URL}/api/orders`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders,
+      },
+      body: JSON.stringify(payload),
     });
 
-    return order;
+    if (!res.ok) {
+      const errText = await res.text();
+      let errorMsg = `HTTP ${res.status}`;
+      try {
+        const parsed = JSON.parse(errText);
+        errorMsg = parsed.detail || errorMsg;
+      } catch {
+        errorMsg = errText || errorMsg;
+      }
+      throw new Error(`Order creation failed: ${errorMsg}`);
+    }
+
+    const createdOrder: FastApiOrder = await res.json();
+
+    // Mirror to Firestore so legacy components also update seamlessly
+    try {
+      const legacyOrder: Partial<Order> = {
+        id: createdOrder.id,
+        customerId: createdOrder.customer_id,
+        storeName: createdOrder.store_name,
+        category: createdOrder.category as any,
+        budgetCap: createdOrder.budget_cap,
+        totalAmount: createdOrder.total_amount,
+        status: createdOrder.status,
+        createdAt: createdOrder.created_at,
+        updatedAt: createdOrder.created_at,
+        shippingFee: createdOrder.delivery_fee,
+        serviceFee: createdOrder.service_fee,
+        items: [{ name: createdOrder.items_description, price: createdOrder.budget_cap, qty: 1 }],
+      };
+      await FirebaseService.setDocument("orders", createdOrder.id, legacyOrder);
+    } catch {
+      // Non-blocking Firestore sync
+    }
+
+    return createdOrder;
   }
 
-  public static async createOrder(orderData: Omit<Order, "id">): Promise<Order> {
-    return this.createBooking(orderData);
+  /**
+   * Legacy alias for createOrder
+   */
+  public static async createBooking(orderData: any): Promise<Order> {
+    const fastApiOrder = await this.createOrder(orderData);
+    return {
+      id: fastApiOrder.id,
+      customerId: fastApiOrder.customer_id,
+      customerName: (orderData as any)?.customerName || "Customer",
+      storeName: fastApiOrder.store_name,
+      category: fastApiOrder.category as any,
+      budgetCap: fastApiOrder.budget_cap,
+      totalAmount: fastApiOrder.total_amount,
+      status: fastApiOrder.status,
+      createdAt: fastApiOrder.created_at,
+      updatedAt: fastApiOrder.created_at,
+      shippingFee: fastApiOrder.delivery_fee,
+      serviceFee: fastApiOrder.service_fee,
+      items: [{ name: fastApiOrder.items_description, price: fastApiOrder.budget_cap, qty: 1 }],
+    };
   }
 
+  /**
+   * Fetches orders from FastAPI backend with optional status filter.
+   */
+  public static async getOrders(statusFilter?: string, role: "customer" | "worker" = "worker"): Promise<FastApiOrder[]> {
+    const authHeaders = await this.getAuthHeader(role);
+    const query = statusFilter ? `?status_filter=${statusFilter}` : "";
+    const res = await fetch(`${API_BASE_URL}/api/orders${query}`, {
+      headers: {
+        ...authHeaders,
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch orders: ${res.statusText}`);
+    }
+
+    return res.json();
+  }
+
+  /**
+   * Fetches single order details by ID from Neon.
+   */
+  public static async getOrderById(orderId: string): Promise<FastApiOrder> {
+    const authHeaders = await this.getAuthHeader("customer");
+    const res = await fetch(`${API_BASE_URL}/api/orders/${orderId}`, {
+      headers: {
+        ...authHeaders,
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`Order #${orderId} not found`);
+    }
+
+    return res.json();
+  }
+
+  /**
+   * Worker claims an unassigned order.
+   */
+  public static async claimOrder(orderId: string, _workerId?: string): Promise<FastApiOrder> {
+    const authHeaders = await this.getAuthHeader("worker");
+    const res = await fetch(`${API_BASE_URL}/api/orders/${orderId}/claim`, {
+      method: "POST",
+      headers: {
+        ...authHeaders,
+      },
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to claim order");
+    }
+
+    return res.json();
+  }
+
+  /**
+   * Worker records the physical store purchase and uploads the receipt.
+   */
+  public static async recordStorePurchase(
+    orderId: string,
+    actualItemCost: number,
+    receiptFile: File | Blob
+  ): Promise<FastApiOrder> {
+    const authHeaders = await this.getAuthHeader("worker");
+    const formData = new FormData();
+    formData.append("actual_item_cost", actualItemCost.toString());
+    formData.append("receipt_file", receiptFile, (receiptFile as any).name || "store_receipt.jpg");
+
+    const res = await fetch(`${API_BASE_URL}/api/orders/${orderId}/store-purchase`, {
+      method: "POST",
+      headers: {
+        ...authHeaders,
+      },
+      body: formData,
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Failed to record store purchase");
+    }
+
+    return res.json();
+  }
+
+  /**
+   * Worker completes delivery by verifying customer OTP and triggering escrow payout.
+   */
+  public static async completeDelivery(orderId: string, otp: string): Promise<FastApiEscrow> {
+    const authHeaders = await this.getAuthHeader("worker");
+    const res = await fetch(`${API_BASE_URL}/api/orders/${orderId}/complete-delivery?otp=${encodeURIComponent(otp)}`, {
+      method: "POST",
+      headers: {
+        ...authHeaders,
+      },
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Invalid OTP or delivery completion failed");
+    }
+
+    return res.json();
+  }
+
+  /**
+   * Updates booking status in Firestore & backend.
+   */
   public static async updateBookingStatus(orderId: string, status: OrderStatus, extraData: Partial<Order> = {}): Promise<void> {
-    const order = await FirebaseService.getDocument<Order>("orders", orderId);
-    if (!order) return;
-
-    const updates: Partial<Order> = {
-      status,
-      ...extraData,
-      updatedAt: new Date().toISOString(),
-    };
-
-    await FirebaseService.updateDocument("orders", orderId, updates);
-
-    const workerId = extraData.workerId || order.workerId;
-    const workerName = extraData.workerName || order.workerName;
-
-    // Handle job completion earnings & metrics logic
-    if (status === "completed" && workerId) {
-      try {
-        const workerUser = await FirebaseService.getDocument<PickPalUser>("users", workerId);
-        const orderAmount = extraData.totalAmount || order.totalAmount || order.budgetCap || 0;
-        const commissionRate = 0.10; // 10% platform commission
-        const netEarnings = Math.round(orderAmount * (1 - commissionRate));
-
-        if (workerUser) {
-          const currentEarnings = workerUser.earnings || 0;
-          const currentJobsCount = workerUser.completedJobsCount || 0;
-          const currentPendingPayout = workerUser.pendingPayout || 0;
-
-          await FirebaseService.updateDocument("users", workerId, {
-            earnings: currentEarnings + netEarnings,
-            completedJobsCount: currentJobsCount + 1,
-            pendingPayout: currentPendingPayout + netEarnings,
-            updatedAt: new Date().toISOString(),
-          });
-
-          // Log transaction for worker
-          const txId = "tx_" + Math.random().toString(36).substring(2, 10);
-          await FirebaseService.setDocument("transactions", txId, {
-            id: txId,
-            userId: workerId,
-            type: "credit",
-            amount: netEarnings,
-            description: `Net earnings from order #${orderId.slice(-6).toUpperCase()} (${order.storeName})`,
-            paymentMethod: "Wallet Settlement",
-            status: "success",
-            referenceId: orderId,
-            timestamp: new Date().toISOString(),
-          });
-        }
-      } catch (err) {
-        console.error("Failed to credit worker earnings on completion:", err);
-      }
-    }
-
-    // Send notifications to customer & worker
-    const statusLabels: Record<string, string> = {
-      worker_assigned: `Worker ${workerName || ""} accepted order #${orderId.slice(-6).toUpperCase()}`,
-      travelling: `Worker ${workerName || ""} is en route to your location`,
-      arrived: `Worker ${workerName || ""} has arrived at your location`,
-      in_progress: `Service started for ${order.storeName}`,
-      checkout_approvals: `Worker requested checkout approval for ${order.storeName}`,
-      delivering: `Worker is delivering your items`,
-      completed: `Order #${orderId.slice(-6).toUpperCase()} completed successfully!`,
-      cancelled: `Order #${orderId.slice(-6).toUpperCase()} was cancelled`,
-    };
-
-    if (statusLabels[status]) {
-      // Customer notification
-      await NotificationService.createNotification({
-        userId: order.customerId,
-        title: `Booking Update`,
-        desc: statusLabels[status],
-        time: "Just now",
-        read: false,
-        orderId: orderId,
-        type: "order",
+    try {
+      await FirebaseService.updateDocument("orders", orderId, {
+        status,
+        ...extraData,
+        updatedAt: new Date().toISOString(),
       });
-
-      // Worker notification
-      if (workerId) {
-        await NotificationService.createNotification({
-          userId: workerId,
-          title: status === "worker_assigned" ? "Job Confirmed" : "Job Status Updated",
-          desc: `Order #${orderId.slice(-6).toUpperCase()} status is now ${status.replace("_", " ")}`,
-          time: "Just now",
-          read: false,
-          orderId: orderId,
-          type: "order",
-        });
-      }
+    } catch {
+      // Ignore if Firestore is unavailable
     }
   }
 
-  public static subscribeCustomerBookings(customerId: string, onUpdate: (orders: Order[]) => void): Unsubscribe {
-    return FirebaseService.subscribeQuery<Order>(
-      "orders",
-      [where("customerId", "==", customerId)],
-      (items) => {
-        const sorted = items.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
-        onUpdate(sorted);
-      }
-    );
+  public static subscribeCustomerBookings(customerId: string, onUpdate: (orders: Order[]) => void) {
+    try {
+      return FirebaseService.subscribeQuery<Order>("orders", [], (items) => {
+        const filtered = items.filter((o) => o.customerId === customerId);
+        onUpdate(filtered);
+      });
+    } catch {
+      return () => {};
+    }
   }
 
-  public static subscribeWorkerJobs(workerId: string, onUpdate: (jobs: Order[]) => void): Unsubscribe {
-    return FirebaseService.subscribeQuery<Order>(
-      "orders",
-      [where("workerId", "==", workerId)],
-      (items) => {
-        const sorted = items.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
-        onUpdate(sorted);
-      }
-    );
+  public static subscribeWorkerJobs(workerId: string, onUpdate: (jobs: Order[]) => void) {
+    try {
+      return FirebaseService.subscribeQuery<Order>("orders", [], (items) => {
+        const filtered = items.filter((o) => o.workerId === workerId);
+        onUpdate(filtered);
+      });
+    } catch {
+      return () => {};
+    }
   }
 
-  public static subscribeAllBookings(onUpdate: (orders: Order[]) => void): Unsubscribe {
-    return FirebaseService.subscribeQuery<Order>("orders", [], (items) => {
-      const sorted = items.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
-      onUpdate(sorted);
-    });
+  public static subscribeAllBookings(onUpdate: (orders: Order[]) => void) {
+    try {
+      return FirebaseService.subscribeQuery<Order>("orders", [], onUpdate);
+    } catch {
+      return () => {};
+    }
   }
 }

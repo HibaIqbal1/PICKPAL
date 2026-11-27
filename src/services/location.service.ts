@@ -1,5 +1,7 @@
 import { FirebaseService } from "./firebase.service";
 
+const WS_BASE_URL = (import.meta as any).env?.VITE_WS_URL || "ws://127.0.0.1:8000";
+
 export class LocationService {
   /**
    * Reverse geocodes lat/lng into a human-readable area name.
@@ -21,8 +23,19 @@ export class LocationService {
         const data = await res.json();
         if (data?.address) {
           const addr = data.address;
-          const neighborhood = addr.suburb || addr.neighbourhood || addr.residential || addr.quarter || addr.subdistrict || addr.road;
-          const city = addr.city || addr.town || addr.municipality || addr.state_district || addr.county;
+          const neighborhood =
+            addr.suburb ||
+            addr.neighbourhood ||
+            addr.residential ||
+            addr.quarter ||
+            addr.subdistrict ||
+            addr.road;
+          const city =
+            addr.city ||
+            addr.town ||
+            addr.municipality ||
+            addr.state_district ||
+            addr.county;
           if (neighborhood && city) {
             return `${neighborhood}, ${city}`;
           }
@@ -64,7 +77,6 @@ export class LocationService {
     return new Promise((resolve) => {
       let resolved = false;
 
-      // Timer safety: If browser location takes > 3.5s (prompt waiting or slow GPS), fallback automatically
       const fallbackTimer = setTimeout(async () => {
         if (!resolved) {
           const ipCoords = await LocationService.getIpCoordinates();
@@ -129,11 +141,78 @@ export class LocationService {
       // Ignore
     }
 
-    // Default Bengaluru Koramangala coordinates
+    // Default Bengaluru coordinates
     return { lat: 12.9352, lng: 77.6245 };
   }
 
-  public static async updateUserLocation(userId: string, lat: number, lng: number, area: string): Promise<void> {
-    await FirebaseService.setDocument("users", userId, { lat, lng, area });
+  public static async updateUserLocation(
+    userId: string,
+    lat: number,
+    lng: number,
+    area: string
+  ): Promise<void> {
+    try {
+      await FirebaseService.setDocument("users", userId, { lat, lng, area });
+    } catch (e) {
+      console.warn("Could not save location to firebase:", e);
+    }
+  }
+
+  // Worker streams live GPS coordinates to backend
+  public static connectWorkerLocation(orderId: string, workerId: string) {
+    const wsUrl = `${WS_BASE_URL.replace(/^http/, "ws")}/ws/worker/${orderId}`;
+    const socket = new WebSocket(wsUrl);
+
+    socket.onopen = () => {
+      console.log(`[WS] Worker connected to order: ${orderId}`);
+    };
+
+    const sendCoords = (latitude: number, longitude: number) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({
+            worker_id: workerId,
+            latitude,
+            longitude,
+          })
+        );
+      }
+    };
+
+    const close = () => socket.close();
+
+    return { sendCoords, close, socket };
+  }
+
+  // Customer listens for live delivery coordinates
+  public static listenToOrderLocation(
+    orderId: string,
+    onLocationReceived: (coords: {
+      latitude: number;
+      longitude: number;
+      timestamp: string;
+      worker_id?: string;
+    }) => void
+  ) {
+    const wsUrl = `${WS_BASE_URL.replace(/^http/, "ws")}/ws/track/${orderId}`;
+    const socket = new WebSocket(wsUrl);
+
+    socket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === "location_update") {
+          onLocationReceived({
+            latitude: data.latitude,
+            longitude: data.longitude,
+            timestamp: data.timestamp || new Date().toISOString(),
+            worker_id: data.worker_id,
+          });
+        }
+      } catch (err) {
+        // Ping or non-JSON message
+      }
+    };
+
+    return () => socket.close();
   }
 }
